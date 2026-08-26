@@ -48,7 +48,7 @@ struct ContentView: View {
     }
 
     private func buildCollage(images: [NSImage]) -> NSImage? {
-        let gap: CGFloat = 2
+        let spacer: CGFloat = 16
         let maxSide: CGFloat = 1200
 
         // Normalize each image to same height
@@ -58,8 +58,8 @@ struct ContentView: View {
             return img.resized(to: NSSize(width: img.size.width * scale, height: targetH))
         }
 
-        let totalW = scaled.map(\.size.width).reduce(0, +) + gap * CGFloat(scaled.count - 1)
-        let totalH = targetH
+        let totalW = scaled.map(\.size.width).reduce(0, +) + spacer * CGFloat(scaled.count + 1)
+        let totalH = targetH + spacer * 2
         let size = NSSize(width: totalW, height: totalH)
 
         let result = NSImage(size: size)
@@ -67,10 +67,10 @@ struct ContentView: View {
         NSColor.black.setFill()
         NSRect(origin: .zero, size: size).fill()
 
-        var x: CGFloat = 0
+        var x: CGFloat = spacer
         for img in scaled {
-            img.draw(in: NSRect(x: x, y: 0, width: img.size.width, height: img.size.height))
-            x += img.size.width + gap
+            img.draw(in: NSRect(x: x, y: spacer, width: img.size.width, height: img.size.height))
+            x += img.size.width + spacer
         }
         result.unlockFocus()
         return result
@@ -79,7 +79,9 @@ struct ContentView: View {
     private func saveCollage(_ image: NSImage) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = "collage.png"
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        panel.nameFieldStringValue = "\(dateFormatter.string(from: Date()))-collage.png"
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
             guard let tiff = image.tiffRepresentation,
