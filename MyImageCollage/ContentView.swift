@@ -7,20 +7,33 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+struct CollageItem: Identifiable {
+    let id = UUID()
+    let image: NSImage
+}
+
 struct ContentView: View {
-    @State private var images: [NSImage?] = [nil, nil]
+    @State private var items: [CollageItem] = []
     @State private var collage: NSImage? = nil
-    @State private var isSaving = false
 
     var body: some View {
         VStack(spacing: 16) {
-            HStack(spacing: 12) {
-                ForEach(0..<2, id: \.self) { index in
-                    DropZone(image: $images[index]) {
+            ScrollView(.horizontal) {
+                HStack(spacing: 12) {
+                    ForEach(items) { item in
+                        Thumbnail(image: item.image) {
+                            items.removeAll { $0.id == item.id }
+                            regenerate()
+                        }
+                    }
+                    AddZone(compact: !items.isEmpty) { newImages in
+                        items.append(contentsOf: newImages.map { CollageItem(image: $0) })
                         regenerate()
                     }
                 }
+                .padding(.vertical, 4)
             }
+            .frame(height: 230)
 
             if let collage {
                 Divider()
@@ -35,6 +48,9 @@ struct ContentView: View {
                     saveCollage(collage)
                 }
                 .buttonStyle(.borderedProminent)
+            } else {
+                Text(items.isEmpty ? "Drop two or more images to build a collage" : "Add at least one more image")
+                    .foregroundStyle(.secondary)
             }
         }
         .padding(20)
@@ -42,9 +58,8 @@ struct ContentView: View {
     }
 
     private func regenerate() {
-        let loaded = images.compactMap { $0 }
-        guard loaded.count == 2 else { collage = nil; return }
-        collage = buildCollage(images: loaded)
+        guard items.count >= 2 else { collage = nil; return }
+        collage = buildCollage(images: items.map(\.image))
     }
 
     private func buildCollage(images: [NSImage]) -> NSImage? {
@@ -92,105 +107,113 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Drop Zone
+// MARK: - Thumbnail
 
-struct DropZone: View {
-    @Binding var image: NSImage?
-    var onChanged: () -> Void
+struct Thumbnail: View {
+    let image: NSImage
+    var onRemove: () -> Void
+
+    var body: some View {
+        Image(nsImage: image)
+            .resizable()
+            .scaledToFill()
+            .frame(width: 260, height: 220)
+            .clipped()
+            .cornerRadius(10)
+            .overlay(alignment: .topTrailing) {
+                Button(action: onRemove) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.title2)
+                        .foregroundStyle(.white, .black.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+            }
+    }
+}
+
+// MARK: - Add Zone
+
+struct AddZone: View {
+    var compact: Bool
+    var onAdd: ([NSImage]) -> Void
 
     @State private var isTargeted = false
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 10)
-                .fill(isTargeted ? Color.accentColor.opacity(0.15) : Color(nsColor: .windowBackgroundColor))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(
-                            isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
-                            style: StrokeStyle(lineWidth: 2, dash: image == nil ? [6, 4] : [])
-                        )
-                )
-
-            if let image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 260, height: 220)
-                    .clipped()
-                    .cornerRadius(10)
-                    .overlay(alignment: .topTrailing) {
-                        Button {
-                            self.image = nil
-                            onChanged()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.title2)
-                                .foregroundStyle(.white, .black.opacity(0.6))
-                        }
-                        .buttonStyle(.plain)
-                        .padding(6)
-                    }
-            } else {
+        RoundedRectangle(cornerRadius: 10)
+            .fill(isTargeted ? Color.accentColor.opacity(0.15) : Color(nsColor: .windowBackgroundColor))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        isTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
+                        style: StrokeStyle(lineWidth: 2, dash: [6, 4])
+                    )
+            )
+            .overlay {
                 VStack(spacing: 8) {
                     Image(systemName: "photo.badge.plus")
                         .font(.system(size: 36))
                         .foregroundStyle(.secondary)
-                    Text("Drop image here")
+                    Text(compact ? "Add more" : "Drop images here")
                         .font(.callout)
                         .foregroundStyle(.secondary)
-                    Button("Choose…") { pickFile() }
+                    Button("Choose…") { pickFiles() }
                         .buttonStyle(.bordered)
                 }
             }
-        }
-        .frame(width: 260, height: 220)
-        .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
-            handleDrop(providers)
-        }
+            .frame(width: compact ? 160 : 260, height: 220)
+            .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
+                handleDrop(providers)
+            }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first else { return false }
+        var accepted = false
+        // Load in drop order, then deliver the batch once all have finished.
+        let group = DispatchGroup()
+        var results = [NSImage?](repeating: nil, count: providers.count)
 
-        if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
-            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                let url: URL?
-                if let data = item as? Data {
-                    url = URL(dataRepresentation: data, relativeTo: nil)
-                } else if let u = item as? URL {
-                    url = u
-                } else {
-                    url = nil
+        for (index, provider) in providers.enumerated() {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                accepted = true
+                group.enter()
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    let url: URL?
+                    if let data = item as? Data {
+                        url = URL(dataRepresentation: data, relativeTo: nil)
+                    } else if let u = item as? URL {
+                        url = u
+                    } else {
+                        url = nil
+                    }
+                    let img = url.flatMap { NSImage(contentsOf: $0) }
+                    DispatchQueue.main.async { results[index] = img; group.leave() }
                 }
-                if let url, let img = NSImage(contentsOf: url) {
-                    DispatchQueue.main.async { self.image = img; onChanged() }
+            } else if provider.canLoadObject(ofClass: NSImage.self) {
+                accepted = true
+                group.enter()
+                _ = provider.loadObject(ofClass: NSImage.self) { obj, _ in
+                    DispatchQueue.main.async { results[index] = obj as? NSImage; group.leave() }
                 }
             }
-            return true
         }
 
-        if provider.canLoadObject(ofClass: NSImage.self) {
-            provider.loadObject(ofClass: NSImage.self) { obj, _ in
-                if let img = obj as? NSImage {
-                    DispatchQueue.main.async { self.image = img; onChanged() }
-                }
-            }
-            return true
+        group.notify(queue: .main) {
+            let images = results.compactMap { $0 }
+            if !images.isEmpty { onAdd(images) }
         }
-
-        return false
+        return accepted
     }
 
-    private func pickFile() {
+    private func pickFiles() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
-        panel.allowsMultipleSelection = false
+        panel.allowsMultipleSelection = true
         panel.begin { response in
-            guard response == .OK, let url = panel.url,
-                  let img = NSImage(contentsOf: url) else { return }
-            self.image = img
-            onChanged()
+            guard response == .OK else { return }
+            let images = panel.urls.compactMap { NSImage(contentsOf: $0) }
+            if !images.isEmpty { onAdd(images) }
         }
     }
 }
