@@ -7,31 +7,32 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-struct CollageItem: Identifiable {
+struct CollageSlot: Identifiable {
     let id = UUID()
-    let image: NSImage
+    var image: NSImage?
 }
 
 struct ContentView: View {
-    @State private var items: [CollageItem] = []
+    private static let requiredSlots = 2
+
+    @State private var slots: [CollageSlot] = (0..<requiredSlots).map { _ in CollageSlot() }
     @State private var collage: NSImage? = nil
 
     var body: some View {
         VStack(spacing: 16) {
-            ScrollView(.horizontal) {
-                HStack(spacing: 12) {
-                    ForEach(items) { item in
-                        Thumbnail(image: item.image) {
-                            items.removeAll { $0.id == item.id }
-                            regenerate()
+            HStack(spacing: 12) {
+                ForEach(slots) { slot in
+                    if let image = slot.image {
+                        Thumbnail(image: image) { remove(slot.id) }
+                    } else {
+                        AddZone(title: "Drop image here", compact: false) { newImages in
+                            fill(slot.id, with: newImages)
                         }
                     }
-                    AddZone(compact: !items.isEmpty) { newImages in
-                        items.append(contentsOf: newImages.map { CollageItem(image: $0) })
-                        regenerate()
-                    }
                 }
-                .padding(.vertical, 4)
+                AddZone(title: "Add more", compact: true) { newImages in
+                    add(newImages)
+                }
             }
             .frame(height: 230)
 
@@ -49,7 +50,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
             } else {
-                Text(items.isEmpty ? "Drop two or more images to build a collage" : "Add at least one more image")
+                Text("Add at least two images to build a collage")
                     .foregroundStyle(.secondary)
             }
         }
@@ -58,8 +59,38 @@ struct ContentView: View {
     }
 
     private func regenerate() {
-        guard items.count >= 2 else { collage = nil; return }
-        collage = buildCollage(images: items.map(\.image))
+        let images = slots.compactMap(\.image)
+        guard images.count >= Self.requiredSlots else { collage = nil; return }
+        collage = buildCollage(images: images)
+    }
+
+    /// Puts the first image in the given slot; any extras go to the next free slots.
+    private func fill(_ id: UUID, with images: [NSImage]) {
+        guard let first = images.first, let index = slots.firstIndex(where: { $0.id == id }) else { return }
+        slots[index].image = first
+        add(Array(images.dropFirst()))
+    }
+
+    /// Fills empty slots in order, then appends new slots for the rest.
+    private func add(_ images: [NSImage]) {
+        var remaining = images[...]
+        for index in slots.indices where slots[index].image == nil {
+            guard let next = remaining.popFirst() else { break }
+            slots[index].image = next
+        }
+        slots.append(contentsOf: remaining.map { CollageSlot(image: $0) })
+        regenerate()
+    }
+
+    /// The first two slots stay as placeholders; extra slots disappear.
+    private func remove(_ id: UUID) {
+        guard let index = slots.firstIndex(where: { $0.id == id }) else { return }
+        if index < Self.requiredSlots {
+            slots[index].image = nil
+        } else {
+            slots.remove(at: index)
+        }
+        regenerate()
     }
 
     private func buildCollage(images: [NSImage]) -> NSImage? {
@@ -114,10 +145,14 @@ struct Thumbnail: View {
     var onRemove: () -> Void
 
     var body: some View {
-        Image(nsImage: image)
-            .resizable()
-            .scaledToFill()
-            .frame(width: 260, height: 220)
+        Color.clear
+            .overlay {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 220)
             .clipped()
             .cornerRadius(10)
             .overlay(alignment: .topTrailing) {
@@ -135,6 +170,7 @@ struct Thumbnail: View {
 // MARK: - Add Zone
 
 struct AddZone: View {
+    var title: String
     var compact: Bool
     var onAdd: ([NSImage]) -> Void
 
@@ -155,14 +191,15 @@ struct AddZone: View {
                     Image(systemName: "photo.badge.plus")
                         .font(.system(size: 36))
                         .foregroundStyle(.secondary)
-                    Text(compact ? "Add more" : "Drop images here")
+                    Text(title)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     Button("Choose…") { pickFiles() }
                         .buttonStyle(.bordered)
                 }
             }
-            .frame(width: compact ? 160 : 260, height: 220)
+            .frame(maxWidth: compact ? 160 : .infinity)
+            .frame(height: 220)
             .onDrop(of: [.fileURL, .image], isTargeted: $isTargeted) { providers in
                 handleDrop(providers)
             }
