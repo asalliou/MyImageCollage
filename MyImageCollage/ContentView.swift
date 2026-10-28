@@ -12,11 +12,19 @@ struct CollageSlot: Identifiable {
     var image: NSImage?
 }
 
+enum CollageLayout: String, CaseIterable, Identifiable {
+    case horizontal = "Horizontal"
+    case vertical = "Vertical"
+
+    var id: String { rawValue }
+}
+
 struct ContentView: View {
     private static let requiredSlots = 2
 
     @State private var slots: [CollageSlot] = (0..<requiredSlots).map { _ in CollageSlot() }
     @State private var collage: NSImage? = nil
+    @State private var layout: CollageLayout = .horizontal
 
     var body: some View {
         VStack(spacing: 16) {
@@ -35,6 +43,13 @@ struct ContentView: View {
                 }
             }
             .frame(height: 230)
+
+            Picker("Layout", selection: $layout) {
+                ForEach(CollageLayout.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .frame(maxWidth: 240)
+            .onChange(of: layout) { regenerate() }
 
             if let collage {
                 Divider()
@@ -96,27 +111,35 @@ struct ContentView: View {
     private func buildCollage(images: [NSImage]) -> NSImage? {
         let spacer: CGFloat = 16
         let maxSide: CGFloat = 1200
+        let horizontal = layout == .horizontal
 
-        // Normalize each image to same height
-        let targetH = min(images.map { $0.size.height }.min() ?? maxSide, maxSide)
+        // Normalize each image to the same height (horizontal) or width (vertical)
+        let target = min(images.map { horizontal ? $0.size.height : $0.size.width }.min() ?? maxSide, maxSide)
         let scaled = images.map { img -> NSImage in
-            let scale = targetH / img.size.height
-            return img.resized(to: NSSize(width: img.size.width * scale, height: targetH))
+            let scale = target / (horizontal ? img.size.height : img.size.width)
+            return img.resized(to: NSSize(width: img.size.width * scale, height: img.size.height * scale))
         }
 
-        let totalW = scaled.map(\.size.width).reduce(0, +) + spacer * CGFloat(scaled.count + 1)
-        let totalH = targetH + spacer * 2
-        let size = NSSize(width: totalW, height: totalH)
+        let lengths = scaled.map { horizontal ? $0.size.width : $0.size.height }
+        let total = lengths.reduce(0, +) + spacer * CGFloat(scaled.count + 1)
+        let cross = target + spacer * 2
+        let size = horizontal ? NSSize(width: total, height: cross) : NSSize(width: cross, height: total)
 
         let result = NSImage(size: size)
         result.lockFocus()
         NSColor.black.setFill()
         NSRect(origin: .zero, size: size).fill()
 
-        var x: CGFloat = spacer
+        // Drawing origin is bottom-left, so vertical collages are laid out from the top down.
+        var offset: CGFloat = spacer
         for img in scaled {
-            img.draw(in: NSRect(x: x, y: spacer, width: img.size.width, height: img.size.height))
-            x += img.size.width + spacer
+            if horizontal {
+                img.draw(in: NSRect(x: offset, y: spacer, width: img.size.width, height: img.size.height))
+                offset += img.size.width + spacer
+            } else {
+                img.draw(in: NSRect(x: spacer, y: size.height - offset - img.size.height, width: img.size.width, height: img.size.height))
+                offset += img.size.height + spacer
+            }
         }
         result.unlockFocus()
         return result
